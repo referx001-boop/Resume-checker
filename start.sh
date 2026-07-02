@@ -1,7 +1,9 @@
 #!/usr/bin/env sh
 set -e
 
-# Build and start the backend from the server directory.
+cd "$(dirname "$0")"
+npm install
+npm run build
 cd server
 npm install
 npm start

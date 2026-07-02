@@ -172,7 +172,7 @@ export default function ResumeCheck() {
     setLoading(true);
     setResult(null);
 
-    const instructions = `You are a senior technical recruiter screening resumes for frontend/software roles. Score the resume content below from 0 to 100 for how likely it is to pass an initial recruiter or ATS screen${role ? ` for a "${role}" role` : ""}.
+    const instructions = `You are a senior technical recruiter screening resumes for frontend/software roles. Score the resume content below from 0 to 100 based primarily on the applicant's technical or software-related skill evidence, even if the overall resume is not explicitly a tech job.
 
 Evaluate only the text below. Do not add or invent details. Do not explain your reasoning outside the JSON.
 
@@ -185,11 +185,13 @@ Use exactly this JSON format:
   ]
 }
 
-Return 5 to 8 findings. Include at least one critical finding for any major resume problem and at least one good finding if the resume deserves it.
+Return 5 to 8 findings. Include at least one critical finding for any major issue and at least one good finding when the resume deserves it.
 
-Focus on actual evidence in the resume text: relevance of skills, experience quality, dates, impact metrics, role clarity, structure, and recruiter readability.
+Write findings like a real recruiter, citing exact resume evidence when possible. Avoid generic language such as "strong skills" unless the text directly supports it.
 
-If this text is not a real resume, return score 0 with critical findings explaining why.
+Focus on technical/software relevance: programming languages, tools, systems, technical projects, coding experience, automation, analytics, and measurable technology impact. If the resume contains little or no tech/software evidence, score it low and explain that clearly.
+
+If this text is not clearly a real resume, return score 0 with critical findings explaining why.
 
 RESUME TEXT:
 ${resumeText}`;

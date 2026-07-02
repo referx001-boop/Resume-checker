@@ -14,15 +14,15 @@ const HUGGINGFACE_API_KEY = process.env.HUGGINGFACE_API_KEY;
 const HUGGINGFACE_MODEL = process.env.HUGGINGFACE_MODEL || "nvidia_nim/minimaxai/minimax-m3";
 const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY?.trim();
 const NVIDIA_API_URL = process.env.NVIDIA_API_URL?.trim() || "https://integrate.api.nvidia.com/v1/chat/completions";
-const NVIDIA_MODEL = process.env.NVIDIA_MODEL?.trim() || "nvidia/nemotron-mini-4b-instruct";
+const NVIDIA_MODEL = process.env.NVIDIA_MODEL?.trim() || "microsoft/phi-4-mini-instruct";
 const NVIDIA_MODEL_TIMEOUTS = {
-  "nvidia/nemotron-mini-4b-instruct": 12000,
   "microsoft/phi-4-mini-instruct": 20000,
+  "nvidia/nemotron-mini-4b-instruct": 12000,
   "minimaxai/minimax-m3": 90000,
 };
 const NVIDIA_MODEL_FALLBACKS = (() => {
   const envFallbacks = process.env.NVIDIA_MODEL_FALLBACKS?.split(",").map((item) => item.trim()).filter(Boolean);
-  const defaults = ["nvidia/nemotron-mini-4b-instruct", "microsoft/phi-4-mini-instruct", "minimaxai/minimax-m3"];
+  const defaults = ["microsoft/phi-4-mini-instruct", "nvidia/nemotron-mini-4b-instruct", "minimaxai/minimax-m3"];
   return Array.from(new Set([NVIDIA_MODEL, ...(envFallbacks.length ? envFallbacks : defaults)]));
 })();
 const MOCK_FALLBACK = process.env.MOCK_FALLBACK === "true";
@@ -186,8 +186,8 @@ app.post("/api/score", async (req, res) => {
               model,
               messages: [{ role: "user", content: truncatePrompt(prompt) }],
               max_tokens: MAX_RESPONSE_TOKENS,
-              temperature: 0.25,
-              top_p: 0.95,
+              temperature: 0.15,
+              top_p: 0.9,
             }),
           }, modelTimeout);
 

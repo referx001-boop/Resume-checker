@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -189,7 +190,13 @@ app.post("/api/score", async (req, res) => {
             },
             body: JSON.stringify({
               model,
-              messages: [{ role: "user", content: truncatePrompt(prompt) }],
+              messages: [
+                {
+                  role: "system",
+                  content: "You score resumes. Read the resume text and return ONLY valid JSON in this exact shape, no markdown, no extra text: {\"score\": number 0-100, \"verdict\": one sentence summary, \"findings\": array of objects with severity (good, warning, or critical) and point (one sentence)}. Give 3 to 6 findings. Base every finding on the actual resume content provided.",
+                },
+                { role: "user", content: truncatePrompt(prompt) },
+              ],
               max_tokens: MAX_RESPONSE_TOKENS,
               temperature: 0.15,
               top_p: 0.9,
@@ -220,7 +227,20 @@ app.post("/api/score", async (req, res) => {
             : data.choices?.[0]?.message?.content || data.output?.[0]?.content || JSON.stringify(data);
 
           if (text && text.trim()) {
-            return res.json({ text, raw: data });
+            const cleaned = text.trim().replace(/^```json\s*/i, "").replace(/```\s*$/i, "");
+            try {
+              const parsed = JSON.parse(cleaned);
+              if (typeof parsed.score === "number" && parsed.verdict && Array.isArray(parsed.findings)) {
+                return res.json(parsed);
+              }
+              lastError = { model, error: "Response missing score, verdict, or findings", body: cleaned };
+              console.warn(`NVIDIA model ${model} returned valid JSON but wrong shape. Trying next fallback if available.`);
+              continue;
+            } catch (parseErr) {
+              lastError = { model, error: "Response was not valid JSON", body: cleaned };
+              console.warn(`NVIDIA model ${model} returned non-JSON text. Trying next fallback if available.`);
+              continue;
+            }
           }
 
           lastError = { model, status: response.status, body: textBody, info: "Empty or missing assistant text" };
@@ -262,10 +282,18 @@ const isVercel = process.env.VERCEL === "1";
 
 if (!isVercel) {
   const distPath = path.resolve(__dirname, "..", "dist");
-  app.use(express.static(distPath));
-  app.get("*", (req, res) => {
-    res.sendFile(path.join(distPath, "index.html"));
-  });
+  const indexPath = path.join(distPath, "index.html");
+
+  if (fs.existsSync(indexPath)) {
+    app.use(express.static(distPath));
+    app.get("*", (req, res) => {
+      res.sendFile(indexPath);
+    });
+  } else {
+    app.get("/", (req, res) => {
+      res.json({ status: "ok", message: "ResumeCheck API is running." });
+    });
+  }
 
   const PORT = process.env.PORT || 3001;
   app.listen(PORT, () => {

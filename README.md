@@ -52,5 +52,9 @@ You should see a local address, usually `http://localhost:5173`. Open that in yo
 
 ## 6. Selling this to other people
 
-Right now this only runs on your laptop. Other people can't reach it unless you host it somewhere public, like Vercel or Railway. For this week, keep using the version inside Claude with a shared link. Come back to this local version when you're ready to build your own branded site.
+Right now this only runs on your laptop. Other people can't reach it unless you host it somewhere public, like Railway. Vercel will not host the current Express backend automatically without a serverless function or custom deployment setup.
+
+For Railway, add your environment variables in the project settings instead of relying on `.env` in the repository. Use the project root as the service root.
+
+For this week, keep using the version inside Claude with a shared link. Come back to this local version when you're ready to build your own branded site.
 # Resume-checker

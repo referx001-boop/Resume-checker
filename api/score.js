@@ -4,7 +4,10 @@ import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
 
-dotenv.config();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+dotenv.config({ path: path.join(__dirname, ".env") });
 
 const app = express();
 app.use(cors());
@@ -264,14 +267,26 @@ app.get("*", (req, res) => {
   res.sendFile(path.join(distPath, "index.html"));
 });
 
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  console.log(`ResumeCheck backend running on http://localhost:${PORT} using provider ${PROVIDER}`);
-}).on("error", (err) => {
-  if (err.code === "EADDRINUSE") {
-    console.error(`Port ${PORT} is already in use. Stop the existing server or set PORT to a free port before restarting.`);
-  } else {
-    console.error(err);
-  }
-  process.exit(1);
-});
+const isVercel = process.env.VERCEL === "1";
+
+if (!isVercel) {
+  const distPath = path.resolve(__dirname, "..", "dist");
+  app.use(express.static(distPath));
+  app.get("*", (req, res) => {
+    res.sendFile(path.join(distPath, "index.html"));
+  });
+
+  const PORT = process.env.PORT || 3001;
+  app.listen(PORT, () => {
+    console.log(`ResumeCheck backend running on http://localhost:${PORT} using provider ${PROVIDER}`);
+  }).on("error", (err) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`Port ${PORT} is already in use. Stop the existing server or set PORT to a free port before restarting.`);
+    } else {
+      console.error(err);
+    }
+    process.exit(1);
+  });
+}
+
+export default app;

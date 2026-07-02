@@ -4,6 +4,6 @@ set -e
 cd "$(dirname "$0")"
 npm install
 npm run build
-cd server
+cd api
 npm install
-npm start
+node score.js

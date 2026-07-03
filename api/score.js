@@ -8,7 +8,7 @@ import { fileURLToPath } from "url";
 
 import { buildPrompt, extractScoreJson } from "./lib/prompt.js";
 import { initializeTransaction, verifyTransaction, isValidWebhookSignature } from "./lib/paystack.js";
-import { createCodeForReference, codeExistsAndUnused, claimCode, releaseCode } from "./lib/codes.js";
+import { createCodeForReference, validateCode } from "./lib/codes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -265,9 +265,9 @@ app.post("/api/verify-code", async (req, res) => {
     const code = (req.body?.code || "").trim().toUpperCase();
     if (!code) return res.status(400).json({ error: "Missing code." });
 
-    const result = await codeExistsAndUnused(code);
+    const result = await validateCode(code);
     if (!result.valid) {
-      const message = result.reason === "used" ? "This code has already been used." : "That code doesn't match. Check with whoever sent you here.";
+      const message = result.reason === "expired" ? "This code has expired. Pay again for a new one." : "That code doesn't match. Check with whoever sent you here.";
       return res.status(403).json({ error: message });
     }
     res.json({ valid: true });
@@ -287,14 +287,13 @@ app.post("/api/score", async (req, res) => {
     return res.status(400).json({ error: "Resume text is missing or too short to score fairly." });
   }
 
-  // Claim the code first: one paid code buys exactly one scoring run. This
-  // also blocks a second, simultaneous request from spending it twice.
-  const claimed = await claimCode(code).catch((err) => {
-    console.error("claimCode failed:", err);
-    return null;
+  const check = await validateCode(code).catch((err) => {
+    console.error("validateCode failed:", err);
+    return { valid: false, reason: "error" };
   });
-  if (!claimed) {
-    return res.status(403).json({ error: "That code is invalid or has already been used." });
+  if (!check.valid) {
+    const message = check.reason === "expired" ? "That code has expired. Pay again for a new one." : "That code is invalid.";
+    return res.status(403).json({ error: message });
   }
 
   try {
@@ -303,7 +302,6 @@ app.post("/api/score", async (req, res) => {
     return res.json(result);
   } catch (err) {
     console.error(err);
-    await releaseCode(code); // don't burn their payment on a server-side failure
     if (MOCK_FALLBACK) {
       return res.json(buildMockScore());
     }

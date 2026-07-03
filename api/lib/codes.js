@@ -2,14 +2,12 @@ import crypto from "crypto";
 import { supabase } from "./supabase.js";
 
 function randomCode() {
-  const bytes = crypto.randomBytes(5).toString("hex").toUpperCase(); // 10 hex chars
+  const bytes = crypto.randomBytes(5).toString("hex").toUpperCase();
   return `RC-${bytes.slice(0, 4)}-${bytes.slice(4, 8)}`;
 }
 
-// Creates one fresh code tied to one paid Paystack reference. Idempotent:
-// if a code already exists for this reference (user refreshed the callback
-// page, or the webhook and the browser redirect both fired), the existing
-// code is returned instead of minting a second free code for one payment.
+// Creates one code tied to one paid reference, valid for 30 days.
+// Idempotent: a second call for the same reference returns the same code.
 export async function createCodeForReference({ reference, email }) {
   const { data: existing, error: existingErr } = await supabase
     .from("access_codes")
@@ -26,43 +24,23 @@ export async function createCodeForReference({ reference, email }) {
       code,
       reference,
       email: email || null,
-      used: false,
     });
     if (!error) return code;
-    if (error.code !== "23505") throw error; // 23505 = unique_violation, retry on collision
+    if (error.code !== "23505") throw error;
   }
   throw new Error("Could not generate a unique code after 5 attempts.");
 }
 
-export async function codeExistsAndUnused(code) {
+// Checks a code exists and hasn't expired. Does not mark it used, since
+// codes now allow unlimited checks until expires_at.
+export async function validateCode(code) {
   const { data, error } = await supabase
     .from("access_codes")
-    .select("code, used")
+    .select("code, expires_at")
     .eq("code", code)
     .maybeSingle();
   if (error) throw error;
   if (!data) return { valid: false, reason: "not_found" };
-  if (data.used) return { valid: false, reason: "used" };
+  if (new Date(data.expires_at) < new Date()) return { valid: false, reason: "expired" };
   return { valid: true };
-}
-
-// Atomically marks a code as used. The .eq("used", false) guard means this
-// only succeeds once, even if two requests race each other with the same
-// code at the same instant.
-export async function claimCode(code) {
-  const { data, error } = await supabase
-    .from("access_codes")
-    .update({ used: true, used_at: new Date().toISOString() })
-    .eq("code", code)
-    .eq("used", false)
-    .select()
-    .maybeSingle();
-  if (error) throw error;
-  return Boolean(data);
-}
-
-// Best-effort rollback if scoring fails after the code was claimed, so a
-// server or model error doesn't cost the user their payment.
-export async function releaseCode(code) {
-  await supabase.from("access_codes").update({ used: false, used_at: null }).eq("code", code);
 }

@@ -1,9 +1,14 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import crypto from "crypto";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
+
+import { buildPrompt, extractScoreJson } from "./lib/prompt.js";
+import { initializeTransaction, verifyTransaction, isValidWebhookSignature } from "./lib/paystack.js";
+import { createCodeForReference, codeExistsAndUnused, claimCode, releaseCode } from "./lib/codes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -12,7 +17,6 @@ dotenv.config({ path: path.join(__dirname, ".env") });
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "15mb" }));
 
 const PROVIDER = (process.env.MODEL_PROVIDER || "mock").trim().toLowerCase();
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -36,6 +40,26 @@ const MAX_PROMPT_CHARS = Number(process.env.MAX_PROMPT_CHARS || "12000");
 const MAX_RESPONSE_TOKENS = Number(process.env.MAX_RESPONSE_TOKENS || "450");
 const NVIDIA_REQUEST_TIMEOUT_MS = Number(process.env.NVIDIA_REQUEST_TIMEOUT_MS || "12000");
 
+const PRICE_NGN = Number(process.env.PRICE_NGN || "1500");
+const APP_URL = (process.env.APP_URL || "http://localhost:5173").replace(/\/$/, "");
+
+if (PROVIDER === "anthropic" && !ANTHROPIC_API_KEY) {
+  console.error("Missing ANTHROPIC_API_KEY. Add it to api/.env before starting.");
+  process.exit(1);
+}
+if (PROVIDER === "huggingface" && !HUGGINGFACE_API_KEY) {
+  console.error("Missing HUGGINGFACE_API_KEY. Add it to api/.env before starting.");
+  process.exit(1);
+}
+if (PROVIDER === "nvidia" && !NVIDIA_API_KEY) {
+  console.error("Missing NVIDIA_API_KEY. Add it to api/.env before starting.");
+  process.exit(1);
+}
+if (!["anthropic", "huggingface", "nvidia", "mock"].includes(PROVIDER)) {
+  console.error("Unsupported MODEL_PROVIDER. Set MODEL_PROVIDER=anthropic, huggingface, nvidia, or mock in api/.env.");
+  process.exit(1);
+}
+
 async function fetchWithTimeout(url, options = {}, timeout = 12000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
@@ -52,47 +76,13 @@ function truncatePrompt(text) {
   return `${text.slice(0, MAX_PROMPT_CHARS)}\n\n[Resume text truncated to ${MAX_PROMPT_CHARS} characters for faster scoring.]`;
 }
 
-if (PROVIDER === "anthropic" && !ANTHROPIC_API_KEY) {
-  console.error("Missing ANTHROPIC_API_KEY. Add it to server/.env before starting.");
-  process.exit(1);
-}
-
-if (PROVIDER === "huggingface" && !HUGGINGFACE_API_KEY) {
-  console.error("Missing HUGGINGFACE_API_KEY. Add it to server/.env before starting.");
-  process.exit(1);
-}
-
-if (PROVIDER === "nvidia" && !NVIDIA_API_KEY) {
-  console.error("Missing NVIDIA_API_KEY. Add it to server/.env before starting.");
-  process.exit(1);
-}
-
-if (!["anthropic", "huggingface", "nvidia", "mock"].includes(PROVIDER)) {
-  console.error("Unsupported MODEL_PROVIDER. Set MODEL_PROVIDER=anthropic, huggingface, nvidia, or mock in server/.env.");
-  process.exit(1);
-}
-
-function buildTextForHuggingFace(content) {
-  const textBlock = Array.isArray(content)
-    ? content.filter((b) => b.type === "text").map((b) => b.text).join("\n\n")
-    : typeof content === "string"
-    ? content
-    : "";
-
-  if (!textBlock || !textBlock.trim()) {
-    return null;
-  }
-
-  return textBlock;
-}
-
-function buildMockScore(text) {
+function buildMockScore() {
   const score = 70 + Math.floor(Math.random() * 21) - 10;
   return {
     score: Math.max(0, Math.min(100, score)),
     verdict: "Looks solid overall; tighten formatting and add more metrics.",
     findings: [
-      { severity: "good", point: "Clear technical experience and relevant frontend skills." },
+      { severity: "good", point: "Clear structure and relevant experience for the stated field." },
       { severity: "warning", point: "Some bullet points are vague; add measurable impact." },
       { severity: "warning", point: "Resume could use stronger action verbs and quantifiable results." },
       { severity: "warning", point: "Spacing and section ordering would be easier to scan." },
@@ -101,91 +91,68 @@ function buildMockScore(text) {
   };
 }
 
-app.post("/api/score", async (req, res) => {
-  try {
-    if (!req.body || !req.body.content) {
-      return res.status(400).json({ error: "Request body must include content." });
-    }
+// Runs the prompt against whichever provider is configured and always
+// returns the same {score, verdict, findings} shape (or throws).
+async function scoreWithProvider(prompt) {
+  if (PROVIDER === "mock") {
+    return buildMockScore();
+  }
 
-    const prompt = buildTextForHuggingFace(req.body.content);
-    if (!prompt) {
-      return res.status(400).json({ error: "Request body must include text content." });
-    }
+  if (PROVIDER === "anthropic") {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6",
+        max_tokens: 1200,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error?.message || "Anthropic request failed.");
+    const text = Array.isArray(data.content) ? data.content.find((b) => b.type === "text")?.text : "";
+    const parsed = extractScoreJson(text);
+    if (!parsed) throw new Error("Anthropic response was not in the expected JSON shape.");
+    return parsed;
+  }
 
-    if (PROVIDER === "mock") {
-      return res.json(buildMockScore(prompt));
-    }
+  if (PROVIDER === "huggingface") {
+    const response = await fetch(`https://api-inference.huggingface.co/models/${encodeURIComponent(HUGGINGFACE_MODEL)}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${HUGGINGFACE_API_KEY}`,
+      },
+      body: JSON.stringify({
+        inputs: prompt,
+        options: { wait_for_model: true },
+        parameters: { max_new_tokens: 1200, temperature: 0.2, return_full_text: false },
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Hugging Face request failed.");
+    const text = typeof data === "string" ? data : data.generated_text || data[0]?.generated_text || "";
+    const parsed = extractScoreJson(text);
+    if (!parsed) throw new Error("Hugging Face response was not in the expected JSON shape.");
+    return parsed;
+  }
 
-    if (PROVIDER === "anthropic") {
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": ANTHROPIC_API_KEY,
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify({
-          model: process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6",
-          max_tokens: 1200,
-          messages: [{ role: "user", content: req.body.content }],
-        }),
-      });
-
-      const data = await response.json();
-      return res.status(response.status).json(data);
-    }
-
-    if (PROVIDER === "huggingface") {
-      const response = await fetch(`https://api-inference.huggingface.co/models/${encodeURIComponent(HUGGINGFACE_MODEL)}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${HUGGINGFACE_API_KEY}`,
-        },
-        body: JSON.stringify({
-          inputs: prompt,
-          options: { wait_for_model: true },
-          parameters: {
-            max_new_tokens: 1200,
-            temperature: 0.2,
-            return_full_text: false,
-          },
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        if (MOCK_FALLBACK) {
-          console.warn("Hugging Face request failed; returning mock result.");
-          return res.json(buildMockScore(prompt));
-        }
-        return res.status(response.status).json(data);
-      }
-
-      const text = typeof data === "string" ? data : data.generated_text || data[0]?.generated_text || JSON.stringify(data);
-      return res.json({ text, raw: data });
-    }
-
-    if (PROVIDER === "nvidia") {
-      console.debug("NVIDIA API URL:", NVIDIA_API_URL);
-      console.debug("NVIDIA model:", NVIDIA_MODEL);
-      console.debug("NVIDIA fallback models:", NVIDIA_MODEL_FALLBACKS);
-
-      let lastError = null;
-      let data = null;
-      let response = null;
-      let textBody = "";
-
-      for (const model of NVIDIA_MODEL_FALLBACKS) {
-        try {
-          console.debug("Trying NVIDIA model:", model);
-          const modelTimeout = NVIDIA_MODEL_TIMEOUTS[model] || NVIDIA_REQUEST_TIMEOUT_MS;
-          response = await fetchWithTimeout(NVIDIA_API_URL, {
+  if (PROVIDER === "nvidia") {
+    let lastError = null;
+    for (const model of NVIDIA_MODEL_FALLBACKS) {
+      try {
+        const modelTimeout = NVIDIA_MODEL_TIMEOUTS[model] || NVIDIA_REQUEST_TIMEOUT_MS;
+        const response = await fetchWithTimeout(
+          NVIDIA_API_URL,
+          {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              "Accept": "application/json",
+              Accept: "application/json",
               Authorization: `Bearer ${NVIDIA_API_KEY}`,
             },
             body: JSON.stringify({
@@ -193,7 +160,8 @@ app.post("/api/score", async (req, res) => {
               messages: [
                 {
                   role: "system",
-                  content: "You score resumes. Read the resume text and return ONLY valid JSON in this exact shape, no markdown, no extra text: {\"score\": number 0-100, \"verdict\": one sentence summary, \"findings\": array of objects with severity (good, warning, or critical) and point (one sentence)}. Give 3 to 6 findings. Base every finding on the actual resume content provided.",
+                  content:
+                    'You score resumes for any industry. Return ONLY valid JSON in this exact shape, no markdown, no extra text: {"score": number 0-100, "verdict": one sentence summary, "findings": array of objects with severity (good, warning, or critical) and point (one sentence)}. Give 3 to 6 findings. Base every finding on the actual resume content provided. Never assume the resume should be for a tech or software role.',
                 },
                 { role: "user", content: truncatePrompt(prompt) },
               ],
@@ -201,80 +169,145 @@ app.post("/api/score", async (req, res) => {
               temperature: 0.15,
               top_p: 0.9,
             }),
-          }, modelTimeout);
+          },
+          modelTimeout
+        );
 
-          textBody = await response.text();
-          console.debug("NVIDIA response status:", response.status);
-          console.debug("NVIDIA response headers:", Object.fromEntries(response.headers.entries()));
-          console.debug("NVIDIA response body:", textBody);
-
-          if (!response.ok) {
-            lastError = { model, status: response.status, body: textBody };
-            console.warn(`NVIDIA model ${model} returned status ${response.status}. Trying next fallback if available.`);
-            continue;
-          }
-
-          try {
-            data = JSON.parse(textBody);
-          } catch (parseError) {
-            lastError = { model, error: "Invalid JSON", body: textBody };
-            console.warn(`NVIDIA model ${model} returned invalid JSON. Trying next fallback if available.`);
-            continue;
-          }
-
-          const text = typeof data === "string"
-            ? data
-            : data.choices?.[0]?.message?.content || data.output?.[0]?.content || JSON.stringify(data);
-
-          if (text && text.trim()) {
-            const cleaned = text.trim().replace(/^```json\s*/i, "").replace(/```\s*$/i, "");
-            try {
-              const parsed = JSON.parse(cleaned);
-              if (typeof parsed.score === "number" && parsed.verdict && Array.isArray(parsed.findings)) {
-                return res.json(parsed);
-              }
-              lastError = { model, error: "Response missing score, verdict, or findings", body: cleaned };
-              console.warn(`NVIDIA model ${model} returned valid JSON but wrong shape. Trying next fallback if available.`);
-              continue;
-            } catch (parseErr) {
-              lastError = { model, error: "Response was not valid JSON", body: cleaned };
-              console.warn(`NVIDIA model ${model} returned non-JSON text. Trying next fallback if available.`);
-              continue;
-            }
-          }
-
-          lastError = { model, status: response.status, body: textBody, info: "Empty or missing assistant text" };
-          console.warn(`NVIDIA model ${model} returned no usable assistant text. Trying next fallback if available.`);
-        } catch (err) {
-          const isTimeout = err.name === "AbortError";
-          lastError = { model, error: err.message, timeout: isTimeout };
-          console.error(`NVIDIA call failed for model ${model}:`, err.message);
-          if (isTimeout) {
-            console.warn(`NVIDIA model ${model} timed out after ${NVIDIA_REQUEST_TIMEOUT_MS}ms. Trying next fallback.`);
-          }
+        const textBody = await response.text();
+        if (!response.ok) {
+          lastError = { model, status: response.status, body: textBody };
           continue;
         }
-      }
 
-      if (MOCK_FALLBACK) {
-        console.warn("All NVIDIA models failed; returning mock result.");
-        return res.json(buildMockScore(prompt));
+        const data = JSON.parse(textBody);
+        const text = data.choices?.[0]?.message?.content || data.output?.[0]?.content || "";
+        const parsed = extractScoreJson(text);
+        if (parsed) return parsed;
+        lastError = { model, error: "Response missing score, verdict, or findings", body: text };
+      } catch (err) {
+        lastError = { model, error: err.message, timeout: err.name === "AbortError" };
       }
-
-      return res.status(502).json({
-        error: "All NVIDIA models failed to produce a valid response.",
-        attempts: NVIDIA_MODEL_FALLBACKS,
-        lastError,
-      });
     }
+    throw new Error(`All NVIDIA models failed: ${JSON.stringify(lastError)}`);
+  }
 
-    res.status(500).json({ error: "Unsupported provider configuration." });
+  throw new Error("Unsupported provider configuration.");
+}
+
+// --- Paystack webhook needs the raw request body to check the signature,
+// so it's registered before the global express.json() middleware below. ---
+app.post("/api/pay/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+  const signature = req.headers["x-paystack-signature"];
+  if (!isValidWebhookSignature(req.body, signature)) {
+    return res.status(401).json({ error: "Invalid signature." });
+  }
+
+  try {
+    const event = JSON.parse(req.body.toString("utf8"));
+    if (event.event === "charge.success") {
+      const { reference, customer } = event.data;
+      await createCodeForReference({ reference, email: customer?.email });
+    }
+    res.sendStatus(200);
+  } catch (err) {
+    console.error("Webhook handling failed:", err);
+    res.sendStatus(200); // Ack anyway so Paystack doesn't hammer retries; we log and move on.
+  }
+});
+
+app.use(express.json({ limit: "15mb" }));
+
+// Starts a payment. Frontend redirects the browser to the returned URL.
+app.post("/api/pay/initialize", async (req, res) => {
+  try {
+    const email = (req.body?.email || "").trim();
+    if (!email || !email.includes("@")) {
+      return res.status(400).json({ error: "A valid email is required." });
+    }
+    const reference = `rc_${crypto.randomUUID()}`;
+    const data = await initializeTransaction({
+      email,
+      amountKobo: PRICE_NGN * 100,
+      callbackUrl: APP_URL,
+      reference,
+    });
+    res.json({ authorizationUrl: data.authorization_url, reference: data.reference });
   } catch (err) {
     console.error(err);
-    if (MOCK_FALLBACK) {
-      return res.json(buildMockScore(prompt));
+    res.status(500).json({ error: err.message || "Could not start payment." });
+  }
+});
+
+// Called by the frontend right after Paystack redirects back with
+// ?reference=... in the URL. Confirms payment, then hands back the code.
+app.post("/api/pay/verify", async (req, res) => {
+  try {
+    const reference = (req.body?.reference || "").trim();
+    if (!reference) return res.status(400).json({ error: "Missing reference." });
+
+    const transaction = await verifyTransaction(reference);
+    if (transaction.status !== "success") {
+      return res.status(402).json({ error: "Payment was not successful." });
     }
-    res.status(500).json({ error: "Server failed to reach the model provider." });
+
+    const code = await createCodeForReference({ reference, email: transaction.customer?.email });
+    res.json({ code });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message || "Could not verify payment." });
+  }
+});
+
+// Lets the frontend check a code is real and unused before letting someone
+// into the tool, without spending it yet. Spending happens in /api/score.
+app.post("/api/verify-code", async (req, res) => {
+  try {
+    const code = (req.body?.code || "").trim().toUpperCase();
+    if (!code) return res.status(400).json({ error: "Missing code." });
+
+    const result = await codeExistsAndUnused(code);
+    if (!result.valid) {
+      const message = result.reason === "used" ? "This code has already been used." : "That code doesn't match. Check with whoever sent you here.";
+      return res.status(403).json({ error: message });
+    }
+    res.json({ valid: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not check that code." });
+  }
+});
+
+app.post("/api/score", async (req, res) => {
+  const code = (req.body?.code || "").trim().toUpperCase();
+  const resumeText = req.body?.resumeText;
+  const role = req.body?.role;
+
+  if (!code) return res.status(400).json({ error: "Missing access code." });
+  if (!resumeText || typeof resumeText !== "string" || resumeText.trim().length < 100) {
+    return res.status(400).json({ error: "Resume text is missing or too short to score fairly." });
+  }
+
+  // Claim the code first: one paid code buys exactly one scoring run. This
+  // also blocks a second, simultaneous request from spending it twice.
+  const claimed = await claimCode(code).catch((err) => {
+    console.error("claimCode failed:", err);
+    return null;
+  });
+  if (!claimed) {
+    return res.status(403).json({ error: "That code is invalid or has already been used." });
+  }
+
+  try {
+    const prompt = buildPrompt({ resumeText, role });
+    const result = await scoreWithProvider(prompt);
+    return res.json(result);
+  } catch (err) {
+    console.error(err);
+    await releaseCode(code); // don't burn their payment on a server-side failure
+    if (MOCK_FALLBACK) {
+      return res.json(buildMockScore());
+    }
+    return res.status(500).json({ error: "Server failed to reach the model provider." });
   }
 });
 
@@ -296,16 +329,18 @@ if (!isVercel) {
   }
 
   const PORT = process.env.PORT || 3001;
-  app.listen(PORT, () => {
-    console.log(`ResumeCheck backend running on http://localhost:${PORT} using provider ${PROVIDER}`);
-  }).on("error", (err) => {
-    if (err.code === "EADDRINUSE") {
-      console.error(`Port ${PORT} is already in use. Stop the existing server or set PORT to a free port before restarting.`);
-    } else {
-      console.error(err);
-    }
-    process.exit(1);
-  });
+  app
+    .listen(PORT, () => {
+      console.log(`ResumeCheck backend running on http://localhost:${PORT} using provider ${PROVIDER}`);
+    })
+    .on("error", (err) => {
+      if (err.code === "EADDRINUSE") {
+        console.error(`Port ${PORT} is already in use. Stop the existing server or set PORT to a free port before restarting.`);
+      } else {
+        console.error(err);
+      }
+      process.exit(1);
+    });
 }
 
 export default app;

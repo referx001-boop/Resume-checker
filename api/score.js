@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
+import { createClient } from "@supabase/supabase-js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -108,6 +109,30 @@ function stripForTier(data, tier) {
   return data;
 }
 
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+async function validateCode(code) {
+  if (!code) return false;
+
+  const { data, error } = await supabase
+    .from("access_codes")
+    .select("code, expires_at")
+    .eq("code", code)
+    .maybeSingle();
+
+  if (error || !data) return false;
+
+  return new Date(data.expires_at) > new Date();
+}
+
+async function markCodeUsed(code) {
+  await supabase
+    .from("access_codes")
+    .update({ used: true, used_at: new Date().toISOString() })
+    .eq("code", code)
+    .eq("used", false);
+}
+
 app.post("/api/score", async (req, res) => {
   const { resumeText, role, code, tier } = req.body || {};
 
@@ -115,10 +140,12 @@ app.post("/api/score", async (req, res) => {
     return res.status(400).json({ error: "Resume text is too short to score." });
   }
 
-  Plug in your existing code validation here for paid requests.
   if (tier !== "free") {
     const valid = await validateCode(code);
-    if (!valid) return res.status(403).json({ error: "That code is no longer valid." });
+    if (!valid) {
+      return res.status(403).json({ error: "That code is no longer valid." });
+    }
+    markCodeUsed(code).catch((err) => console.error("Failed to mark code used:", err));
   }
 
   const prompt = buildPrompt(resumeText, role);

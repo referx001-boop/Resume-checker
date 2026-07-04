@@ -133,6 +133,129 @@ async function markCodeUsed(code) {
     .eq("used", false);
 }
 
+const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
+const FRONTEND_URL = process.env.FRONTEND_URL || "https://resume-checker2-tau.vercel.app";
+const PRICE_NGN = Number(process.env.PRICE_NGN || "1500");
+
+function generateAccessCode() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+  for (let i = 0; i < 8; i += 1) {
+    code += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return code;
+}
+
+app.post("/api/pay/initialize", async (req, res) => {
+  const { email } = req.body || {};
+
+  if (!email || !email.includes("@")) {
+    return res.status(400).json({ error: "Enter a valid email." });
+  }
+
+  if (!PAYSTACK_SECRET_KEY) {
+    return res.status(500).json({ error: "Payment is not configured on the server." });
+  }
+
+  try {
+    const paystackRes = await fetch("https://api.paystack.co/transaction/initialize", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${PAYSTACK_SECRET_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        email,
+        amount: PRICE_NGN * 100,
+        callback_url: `${FRONTEND_URL}/app`,
+      }),
+    });
+
+    const paystackData = await paystackRes.json();
+
+    if (!paystackRes.ok || !paystackData.status) {
+      return res.status(400).json({ error: paystackData.message || "Could not start payment." });
+    }
+
+    const { authorization_url: authorizationUrl, reference } = paystackData.data;
+
+    let code = generateAccessCode();
+    let insertError = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const { error } = await supabase.from("access_codes").insert({ code, reference, email });
+      if (!error) {
+        insertError = null;
+        break;
+      }
+      insertError = error;
+      code = generateAccessCode();
+    }
+    if (insertError) {
+      return res.status(500).json({ error: "Could not create an access code. Try again." });
+    }
+
+    return res.json({ authorizationUrl });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Could not reach Paystack. Try again." });
+  }
+});
+
+app.post("/api/pay/verify", async (req, res) => {
+  const { reference } = req.body || {};
+
+  if (!reference) {
+    return res.status(400).json({ error: "Missing payment reference." });
+  }
+
+  if (!PAYSTACK_SECRET_KEY) {
+    return res.status(500).json({ error: "Payment is not configured on the server." });
+  }
+
+  try {
+    const paystackRes = await fetch(`https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`, {
+      headers: { Authorization: `Bearer ${PAYSTACK_SECRET_KEY}` },
+    });
+
+    const paystackData = await paystackRes.json();
+
+    if (!paystackRes.ok || paystackData.data?.status !== "success") {
+      return res.status(400).json({ error: "Payment could not be verified." });
+    }
+
+    const { data, error } = await supabase
+      .from("access_codes")
+      .select("code")
+      .eq("reference", reference)
+      .maybeSingle();
+
+    if (error || !data) {
+      return res.status(404).json({ error: "No access code found for this payment." });
+    }
+
+    return res.json({ code: data.code });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Could not verify payment. Try again." });
+  }
+});
+
+app.post("/api/verify-code", async (req, res) => {
+  const { code } = req.body || {};
+  const cleaned = (code || "").trim().toUpperCase();
+
+  if (!cleaned) {
+    return res.status(400).json({ error: "Enter your access code." });
+  }
+
+  const valid = await validateCode(cleaned);
+  if (!valid) {
+    return res.status(403).json({ error: "That code doesn't match or has expired." });
+  }
+
+  return res.json({ ok: true });
+});
+
 app.post("/api/score", async (req, res) => {
   const { resumeText, role, code, tier } = req.body || {};
 

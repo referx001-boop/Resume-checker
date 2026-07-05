@@ -23,9 +23,9 @@ const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY?.trim();
 const NVIDIA_API_URL = process.env.NVIDIA_API_URL?.trim() || "https://integrate.api.nvidia.com/v1/chat/completions";
 const NVIDIA_MODEL = process.env.NVIDIA_MODEL?.trim() || "microsoft/phi-4-mini-instruct";
 const NVIDIA_MODEL_TIMEOUTS = {
-  "microsoft/phi-4-mini-instruct": 20000,
-  "nvidia/nemotron-mini-4b-instruct": 12000,
-  "minimaxai/minimax-m3": 90000,
+  "microsoft/phi-4-mini-instruct": 8000,
+  "nvidia/nemotron-mini-4b-instruct": 8000,
+  "minimaxai/minimax-m3": 8000,
 };
 const NVIDIA_MODEL_FALLBACKS = (() => {
   const envFallbacks = (process.env.NVIDIA_MODEL_FALLBACKS?.split(",").map((item) => item.trim()).filter(Boolean)) || [];
@@ -35,9 +35,9 @@ const NVIDIA_MODEL_FALLBACKS = (() => {
 const MOCK_FALLBACK = process.env.MOCK_FALLBACK === "true";
 const MAX_PROMPT_CHARS = Number(process.env.MAX_PROMPT_CHARS || "12000");
 const MAX_RESPONSE_TOKENS = Number(process.env.MAX_RESPONSE_TOKENS || "700");
-const NVIDIA_REQUEST_TIMEOUT_MS = Number(process.env.NVIDIA_REQUEST_TIMEOUT_MS || "12000");
+const NVIDIA_REQUEST_TIMEOUT_MS = Number(process.env.NVIDIA_REQUEST_TIMEOUT_MS || "8000");
 
-async function fetchWithTimeout(url, options = {}, timeout = 12000) {
+async function fetchWithTimeout(url, options = {}, timeout = 8000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
   try {
@@ -345,7 +345,13 @@ app.post("/api/score", async (req, res) => {
 
           lastError = { model, status: response.status, body: textBody, info: "Empty or missing assistant text" };
         } catch (err) {
-          lastError = { model, error: err.message, timeout: err.name === "AbortError" };
+          lastError = {
+            model,
+            error: err.message,
+            cause: err.cause?.message || err.cause?.code || null,
+            timeout: err.name === "AbortError",
+          };
+          console.error("NVIDIA request failed:", model, lastError);
           continue;
         }
       }

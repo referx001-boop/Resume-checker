@@ -21,23 +21,23 @@ const HUGGINGFACE_API_KEY = process.env.HUGGINGFACE_API_KEY;
 const HUGGINGFACE_MODEL = process.env.HUGGINGFACE_MODEL || "nvidia_nim/minimaxai/minimax-m3";
 const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY?.trim();
 const NVIDIA_API_URL = process.env.NVIDIA_API_URL?.trim() || "https://integrate.api.nvidia.com/v1/chat/completions";
-const NVIDIA_MODEL = process.env.NVIDIA_MODEL?.trim() || "microsoft/phi-4-mini-instruct";
+const NVIDIA_MODEL = process.env.NVIDIA_MODEL?.trim() || "meta/llama-3.3-70b-instruct";
 const NVIDIA_MODEL_TIMEOUTS = {
-  "microsoft/phi-4-mini-instruct": 8000,
-  "nvidia/nemotron-mini-4b-instruct": 8000,
-  "minimaxai/minimax-m3": 8000,
+  "meta/llama-3.3-70b-instruct": 15000,
+  "nvidia/nemotron-3-nano-30b-a3b": 10000,
+  "openai/gpt-oss-20b": 10000,
 };
 const NVIDIA_MODEL_FALLBACKS = (() => {
   const envFallbacks = (process.env.NVIDIA_MODEL_FALLBACKS?.split(",").map((item) => item.trim()).filter(Boolean)) || [];
-  const defaults = ["microsoft/phi-4-mini-instruct", "nvidia/nemotron-mini-4b-instruct", "minimaxai/minimax-m3"];
+  const defaults = ["meta/llama-3.3-70b-instruct", "nvidia/nemotron-3-nano-30b-a3b", "openai/gpt-oss-20b"];
   return Array.from(new Set([NVIDIA_MODEL, ...(envFallbacks.length ? envFallbacks : defaults)]));
 })();
 const MOCK_FALLBACK = process.env.MOCK_FALLBACK === "true";
 const MAX_PROMPT_CHARS = Number(process.env.MAX_PROMPT_CHARS || "12000");
 const MAX_RESPONSE_TOKENS = Number(process.env.MAX_RESPONSE_TOKENS || "700");
-const NVIDIA_REQUEST_TIMEOUT_MS = Number(process.env.NVIDIA_REQUEST_TIMEOUT_MS || "8000");
+const NVIDIA_REQUEST_TIMEOUT_MS = Number(process.env.NVIDIA_REQUEST_TIMEOUT_MS || "12000");
 
-async function fetchWithTimeout(url, options = {}, timeout = 8000) {
+async function fetchWithTimeout(url, options = {}, timeout = 12000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
   try {

@@ -21,23 +21,37 @@ const HUGGINGFACE_API_KEY = process.env.HUGGINGFACE_API_KEY;
 const HUGGINGFACE_MODEL = process.env.HUGGINGFACE_MODEL || "nvidia_nim/minimaxai/minimax-m3";
 const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY?.trim();
 const NVIDIA_API_URL = process.env.NVIDIA_API_URL?.trim() || "https://integrate.api.nvidia.com/v1/chat/completions";
-const NVIDIA_MODEL = process.env.NVIDIA_MODEL?.trim() || "nvidia/nemotron-3-nano-30b-a3b";
+
+// VERIFIED models on integrate.api.nvidia.com — pick what your key actually has access to
+const NVIDIA_MODEL = process.env.NVIDIA_MODEL?.trim() || "nvidia/nemotron-nano-9b-v2";
+
+// Realistic timeouts: cold start + buffer. Anything less = guaranteed timeout on first hit.
 const NVIDIA_MODEL_TIMEOUTS = {
-  "nvidia/nemotron-3-nano-30b-a3b": 30000,
-  "meta/llama-3.3-70b-instruct": 60000,
-  "nvidia/nemotron-3-super-120b-a12b": 90000,
+  "nvidia/nemotron-nano-9b-v2": 45000,
+  "meta/llama-3.3-70b-instruct": 120000,
+  "meta/llama-3.1-8b-instruct": 30000,
+  "mistralai/mixtral-8x22b-instruct-v0.1": 90000,
 };
+const DEFAULT_TIMEOUT_MS = 60000; // bumped from 12s — was the original bug
+
+// Order matters: fastest reliable model FIRST so most requests succeed quickly.
 const NVIDIA_MODEL_FALLBACKS = (() => {
   const envFallbacks = (process.env.NVIDIA_MODEL_FALLBACKS?.split(",").map((item) => item.trim()).filter(Boolean)) || [];
-  const defaults = ["nvidia/nemotron-3-nano-30b-a3b", "meta/llama-3.3-70b-instruct", "nvidia/nemotron-3-super-120b-a12b"];
+  const defaults = [
+    "nvidia/nemotron-nano-9b-v2",           // fast, good for structured JSON
+    "meta/llama-3.1-8b-instruct",           // snappy backup
+    "meta/llama-3.3-70b-instruct",          // premium fallback
+  ];
   return Array.from(new Set([NVIDIA_MODEL, ...(envFallbacks.length ? envFallbacks : defaults)]));
 })();
+
 const MOCK_FALLBACK = process.env.MOCK_FALLBACK === "true";
 const MAX_PROMPT_CHARS = Number(process.env.MAX_PROMPT_CHARS || "12000");
 const MAX_RESPONSE_TOKENS = Number(process.env.MAX_RESPONSE_TOKENS || "700");
-const NVIDIA_REQUEST_TIMEOUT_MS = Number(process.env.NVIDIA_REQUEST_TIMEOUT_MS || "12000");
+const NVIDIA_REQUEST_TIMEOUT_MS = Number(process.env.NVIDIA_REQUEST_TIMEOUT_MS || DEFAULT_TIMEOUT_MS);
 
-async function fetchWithTimeout(url, options = {}, timeout = 12000) {
+// FIXED: default to a sane 60s, not 12s
+async function fetchWithTimeout(url, options = {}, timeout = DEFAULT_TIMEOUT_MS) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
   try {
@@ -46,6 +60,48 @@ async function fetchWithTimeout(url, options = {}, timeout = 12000) {
     clearTimeout(id);
   }
 }
+
+// ... (truncatePrompt, env validation, system prompt unchanged) ...
+
+// FIXED warmup: checks response.ok, uses model's actual timeout, exposes result
+async function warmupNvidia() {
+  const warmupModel = NVIDIA_MODEL_FALLBACKS[0];
+  const timeout = NVIDIA_MODEL_TIMEOUTS[warmupModel] || DEFAULT_TIMEOUT_MS;
+  console.log(`[boot] Warming up NVIDIA model: ${warmupModel} (timeout ${timeout}ms)`);
+  try {
+    const r = await fetchWithTimeout(
+      NVIDIA_API_URL,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          Authorization: `Bearer ${NVIDIA_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: warmupModel,
+          messages: [{ role: "user", content: "hi" }],
+          max_tokens: 8,
+          stream: false,
+        }),
+      },
+      timeout
+    );
+    if (!r.ok) {
+      const body = await r.text();
+      console.error(`[boot] Warmup FAILED for ${warmupModel}: HTTP ${r.status} — ${body.slice(0, 200)}`);
+      return false;
+    }
+    await r.text(); // drain body
+    console.log(`[boot] Warmup OK: ${warmupModel}`);
+    return true;
+  } catch (err) {
+    console.error(`[boot] Warmup FAILED for ${warmupModel}:`, err.message);
+    return false;
+  }
+}
+
+let nvidiaWarm = false;
 
 function truncatePrompt(text) {
   if (typeof text !== "string") return text;
@@ -73,30 +129,10 @@ if (!["anthropic", "huggingface", "nvidia", "mock"].includes(PROVIDER)) {
   process.exit(1);
 }
 
-if (PROVIDER === "nvidia" && NVIDIA_MODEL_FALLBACKS.length > 0) {
-  const warmupModel = NVIDIA_MODEL_FALLBACKS[0];
-  console.log(`Warming up NVIDIA model: ${warmupModel}`);
-  fetchWithTimeout(
-    NVIDIA_API_URL,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        Authorization: `Bearer ${NVIDIA_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: warmupModel,
-        messages: [{ role: "user", content: "ok" }],
-        max_tokens: 4,
-        stream: false,
-      }),
-    },
-    30000
-  )
-    .then((r) => r.text())
-    .then(() => console.log(`NVIDIA warmup complete: ${warmupModel}`))
-    .catch((err) => console.warn("NVIDIA warmup failed, will retry on first real request:", err.message));
+if (PROVIDER === "nvidia") {
+  warmupNvidia()
+    .then((ok) => { nvidiaWarm = ok; })
+    .catch((err) => console.error("[boot] Warmup threw:", err));
 }
 
 const SYSTEM_PROMPT =

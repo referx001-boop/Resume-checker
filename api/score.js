@@ -34,9 +34,9 @@ const NVIDIA_API_URL =
 const NVIDIA_MODEL =
   process.env.NVIDIA_MODEL?.trim() || "nvidia/nemotron-3-nano-30b-a3b";
 const NVIDIA_MODEL_TIMEOUTS = {
-  "nvidia/nemotron-3-nano-30b-a3b": 12000,
+   "nvidia/nemotron-3-nano-30b-a3b": 25000,
   // "meta/llama-3.3-70b-instruct": 12000,
-  "nvidia/nemotron-3-super-120b-a12b": 12000,
+  // "nvidia/nemotron-3-super-120b-a12b": 12000,
 };
 const NVIDIA_MODEL_FALLBACKS = (() => {
   const envFallbacks =
@@ -46,7 +46,7 @@ const NVIDIA_MODEL_FALLBACKS = (() => {
   const defaults = [
     "nvidia/nemotron-3-nano-30b-a3b",
     // "meta/llama-3.3-70b-instruct",
-    "nvidia/nemotron-3-super-120b-a12b",
+    // "nvidia/nemotron-3-super-120b-a12b",
   ];
   return Array.from(
     new Set([NVIDIA_MODEL, ...(envFallbacks.length ? envFallbacks : defaults)]),
@@ -54,7 +54,7 @@ const NVIDIA_MODEL_FALLBACKS = (() => {
 })();
 const MOCK_FALLBACK = process.env.MOCK_FALLBACK === "true";
 const MAX_PROMPT_CHARS = Number(process.env.MAX_PROMPT_CHARS || "12000");
-const MAX_RESPONSE_TOKENS = Number(process.env.MAX_RESPONSE_TOKENS || "700");
+const MAX_RESPONSE_TOKENS = Number(process.env.MAX_RESPONSE_TOKENS || "500");
 const NVIDIA_REQUEST_TIMEOUT_MS = Number(
   process.env.NVIDIA_REQUEST_TIMEOUT_MS || "60000",
 );

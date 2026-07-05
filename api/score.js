@@ -21,15 +21,15 @@ const HUGGINGFACE_API_KEY = process.env.HUGGINGFACE_API_KEY;
 const HUGGINGFACE_MODEL = process.env.HUGGINGFACE_MODEL || "nvidia_nim/minimaxai/minimax-m3";
 const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY?.trim();
 const NVIDIA_API_URL = process.env.NVIDIA_API_URL?.trim() || "https://integrate.api.nvidia.com/v1/chat/completions";
-const NVIDIA_MODEL = process.env.NVIDIA_MODEL?.trim() || "meta/llama-3.3-70b-instruct";
+const NVIDIA_MODEL = process.env.NVIDIA_MODEL?.trim() || "nvidia/nemotron-3-nano-30b-a3b";
 const NVIDIA_MODEL_TIMEOUTS = {
-  "meta/llama-3.3-70b-instruct": 40000,
-  "nvidia/nemotron-3-nano-30b-a3b": 25000,
-  "openai/gpt-oss-20b": 25000,
+  "nvidia/nemotron-3-nano-30b-a3b": 30000,
+  "meta/llama-3.3-70b-instruct": 60000,
+  "nvidia/nemotron-3-super-120b-a12b": 90000,
 };
 const NVIDIA_MODEL_FALLBACKS = (() => {
   const envFallbacks = (process.env.NVIDIA_MODEL_FALLBACKS?.split(",").map((item) => item.trim()).filter(Boolean)) || [];
-  const defaults = ["meta/llama-3.3-70b-instruct", "nvidia/nemotron-3-nano-30b-a3b", "openai/gpt-oss-20b"];
+  const defaults = ["nvidia/nemotron-3-nano-30b-a3b", "meta/llama-3.3-70b-instruct", "nvidia/nemotron-3-super-120b-a12b"];
   return Array.from(new Set([NVIDIA_MODEL, ...(envFallbacks.length ? envFallbacks : defaults)]));
 })();
 const MOCK_FALLBACK = process.env.MOCK_FALLBACK === "true";
@@ -71,6 +71,32 @@ if (PROVIDER === "nvidia" && !NVIDIA_API_KEY) {
 if (!["anthropic", "huggingface", "nvidia", "mock"].includes(PROVIDER)) {
   console.error("Unsupported MODEL_PROVIDER. Set MODEL_PROVIDER=anthropic, huggingface, nvidia, or mock in server/.env.");
   process.exit(1);
+}
+
+if (PROVIDER === "nvidia" && NVIDIA_MODEL_FALLBACKS.length > 0) {
+  const warmupModel = NVIDIA_MODEL_FALLBACKS[0];
+  console.log(`Warming up NVIDIA model: ${warmupModel}`);
+  fetchWithTimeout(
+    NVIDIA_API_URL,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        Authorization: `Bearer ${NVIDIA_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: warmupModel,
+        messages: [{ role: "user", content: "ok" }],
+        max_tokens: 4,
+        stream: false,
+      }),
+    },
+    30000
+  )
+    .then((r) => r.text())
+    .then(() => console.log(`NVIDIA warmup complete: ${warmupModel}`))
+    .catch((err) => console.warn("NVIDIA warmup failed, will retry on first real request:", err.message));
 }
 
 const SYSTEM_PROMPT =

@@ -34,29 +34,14 @@ const NVIDIA_API_URL =
 const NVIDIA_MODEL =
   process.env.NVIDIA_MODEL?.trim() || "nvidia/nemotron-3-nano-30b-a3b";
 const NVIDIA_MODEL_TIMEOUTS = {
-   "nvidia/nemotron-3-nano-30b-a3b": 25000,
-  // "meta/llama-3.3-70b-instruct": 12000,
-  // "nvidia/nemotron-3-super-120b-a12b": 12000,
+  "nvidia/nemotron-3-nano-30b-a3b": 25000,
 };
-const NVIDIA_MODEL_FALLBACKS = (() => {
-  const envFallbacks =
-    process.env.NVIDIA_MODEL_FALLBACKS?.split(",")
-      .map((item) => item.trim())
-      .filter(Boolean) || [];
-  const defaults = [
-    "nvidia/nemotron-3-nano-30b-a3b",
-    // "meta/llama-3.3-70b-instruct",
-    // "nvidia/nemotron-3-super-120b-a12b",
-  ];
-  return Array.from(
-    new Set([NVIDIA_MODEL, ...(envFallbacks.length ? envFallbacks : defaults)]),
-  );
-})();
+const NVIDIA_MODEL_FALLBACKS = ["nvidia/nemotron-3-nano-30b-a3b"];
 const MOCK_FALLBACK = process.env.MOCK_FALLBACK === "true";
 const MAX_PROMPT_CHARS = Number(process.env.MAX_PROMPT_CHARS || "12000");
-const MAX_RESPONSE_TOKENS = Number(process.env.MAX_RESPONSE_TOKENS || "500");
+const MAX_RESPONSE_TOKENS = Number(process.env.MAX_RESPONSE_TOKENS || "900");
 const NVIDIA_REQUEST_TIMEOUT_MS = Number(
-  process.env.NVIDIA_REQUEST_TIMEOUT_MS || "60000",
+  process.env.NVIDIA_REQUEST_TIMEOUT_MS || "25000",
 );
 
 async function fetchWithTimeout(url, options = {}, timeout = 60000) {
@@ -129,6 +114,7 @@ async function warmupNvidia() {
           messages: [{ role: "user", content: "ok" }],
           max_tokens: 4,
           stream: false,
+          chat_template_kwargs: { thinking: false },
         }),
       },
       timeout,
@@ -158,9 +144,9 @@ if (PROVIDER === "nvidia" && NVIDIA_MODEL_FALLBACKS.length > 0) {
 }
 
 const SYSTEM_PROMPT =
-  "You score resumes like an experienced recruiter. Read the resume text and return ONLY valid JSON in this exact shape, no markdown, no extra text: " +
+  "You score resumes like an experienced recruiter. Read the resume text and return ONLY valid JSON in this exact shape, no markdown, no extra text, no reasoning, no explanation before or after the JSON: " +
   '{"score": number 0-100, "verdict": one direct sentence, "findings": array of objects with severity (good, warning, or critical) and point (one specific sentence), "rewriteSuggestions": array of objects with original (a weak line from the resume) and rewrite (a stronger version of that line)}. ' +
-  "Give 4 to 8 findings. Give 2 to 5 rewriteSuggestions, only for lines that genuinely need work. Base every finding on the actual resume content provided.";
+  "Give 4 to 8 findings. Give 2 to 5 rewriteSuggestions, only for lines that genuinely need work. Base every finding on the actual resume content provided. Your entire response must be the JSON object and nothing else.";
 
 function buildPrompt(resumeText, role) {
   const roleLine = role ? `Target role: ${role}\n\n` : "";
@@ -447,23 +433,35 @@ app.post("/api/score", async (req, res) => {
                 temperature: 0.15,
                 top_p: 0.9,
                 stream: false,
+                chat_template_kwargs: { thinking: false },
               }),
             },
             modelTimeout,
           );
 
           textBody = await response.text();
-if (!response.ok) {
-  lastError = { model, status: response.status, body: textBody };
-  console.error("NVIDIA model returned error status:", model, response.status, textBody.slice(0, 300));
-  continue;
-}
+
+          if (!response.ok) {
+            lastError = { model, status: response.status, body: textBody };
+            console.error(
+              "NVIDIA model returned error status:",
+              model,
+              response.status,
+              textBody.slice(0, 300),
+            );
+            continue;
+          }
 
           let data;
           try {
             data = JSON.parse(textBody);
           } catch {
             lastError = { model, error: "Invalid JSON", body: textBody };
+            console.error(
+              "NVIDIA response body was not valid JSON:",
+              model,
+              textBody.slice(0, 300),
+            );
             continue;
           }
 
@@ -490,6 +488,11 @@ if (!response.ok) {
                 error: "Response missing score, verdict, or findings",
                 body: cleaned,
               };
+              console.error(
+                "NVIDIA response missing required fields:",
+                model,
+                cleaned.slice(0, 300),
+              );
               continue;
             } catch {
               lastError = {
@@ -497,6 +500,11 @@ if (!response.ok) {
                 error: "Response was not valid JSON",
                 body: cleaned,
               };
+              console.error(
+                "NVIDIA response content was not valid JSON:",
+                model,
+                cleaned.slice(0, 300),
+              );
               continue;
             }
           }
@@ -507,6 +515,11 @@ if (!response.ok) {
             body: textBody,
             info: "Empty or missing assistant text",
           };
+          console.error(
+            "NVIDIA response had empty assistant text:",
+            model,
+            textBody.slice(0, 300),
+          );
         } catch (err) {
           lastError = {
             model,

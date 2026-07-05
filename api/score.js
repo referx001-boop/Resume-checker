@@ -306,6 +306,7 @@ app.post("/api/score", async (req, res) => {
 
     if (PROVIDER === "nvidia") {
       let lastError = null;
+      let data = null;
       let response = null;
       let textBody = "";
 
@@ -318,7 +319,7 @@ app.post("/api/score", async (req, res) => {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
-                Accept: "text/event-stream",
+                Accept: "application/json",
                 Authorization: `Bearer ${NVIDIA_API_KEY}`,
               },
               body: JSON.stringify({
@@ -330,46 +331,28 @@ app.post("/api/score", async (req, res) => {
                 max_tokens: MAX_RESPONSE_TOKENS,
                 temperature: 0.15,
                 top_p: 0.9,
-                stream: true,
+                stream: false,
               }),
             },
             modelTimeout
           );
 
+          textBody = await response.text();
+
           if (!response.ok) {
-            textBody = await response.text();
             lastError = { model, status: response.status, body: textBody };
             continue;
           }
 
-          // Read the SSE stream and accumulate the content chunks.
-          let text = "";
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = "";
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-
-            const lines = buffer.split("\n");
-            buffer = lines.pop();
-
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed.startsWith("data:")) continue;
-              const payload = trimmed.slice(5).trim();
-              if (payload === "[DONE]") continue;
-              try {
-                const chunk = JSON.parse(payload);
-                const delta = chunk.choices?.[0]?.delta?.content;
-                if (delta) text += delta;
-              } catch {
-                // Skip malformed SSE lines.
-              }
-            }
+          let data;
+          try {
+            data = JSON.parse(textBody);
+          } catch {
+            lastError = { model, error: "Invalid JSON", body: textBody };
+            continue;
           }
+
+          const text = data.choices?.[0]?.message?.content || "";
 
           if (text && text.trim()) {
             const cleaned = text.trim().replace(/^```json\s*/i, "").replace(/```\s*$/i, "");
@@ -387,7 +370,7 @@ app.post("/api/score", async (req, res) => {
             }
           }
 
-          lastError = { model, info: "Stream completed with no assistant text" };
+          lastError = { model, status: response.status, body: textBody, info: "Empty or missing assistant text" };
         } catch (err) {
           lastError = {
             model,

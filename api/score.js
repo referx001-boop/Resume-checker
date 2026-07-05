@@ -27,6 +27,22 @@ const NVIDIA_MODEL_TIMEOUTS = {
   "nvidia/nemotron-3-nano-30b-a3b": 9000,
   "openai/gpt-oss-20b": 9000,
 };
+
+app.get("/api/network-test", async (req, res) => {
+  try {
+    const start = Date.now();
+    const testRes = await fetchWithTimeout("https://api.github.com", {}, 8000);
+    const duration = Date.now() - start;
+    return res.json({ ok: true, status: testRes.status, duration });
+  } catch (err) {
+    return res.json({
+      ok: false,
+      error: err.message,
+      cause: err.cause?.message || err.cause?.code || null,
+      timeout: err.name === "AbortError",
+    });
+  }
+});
 const NVIDIA_MODEL_FALLBACKS = (() => {
   const envFallbacks = (process.env.NVIDIA_MODEL_FALLBACKS?.split(",").map((item) => item.trim()).filter(Boolean)) || [];
   const defaults = ["meta/llama-3.3-70b-instruct", "nvidia/nemotron-3-nano-30b-a3b", "openai/gpt-oss-20b"];

@@ -34,9 +34,9 @@ const NVIDIA_API_URL =
 const NVIDIA_MODEL =
   process.env.NVIDIA_MODEL?.trim() || "nvidia/nemotron-3-nano-30b-a3b";
 const NVIDIA_MODEL_TIMEOUTS = {
-  "nvidia/nemotron-3-nano-30b-a3b": 30000,
-  "meta/llama-3.3-70b-instruct": 60000,
-  "nvidia/nemotron-3-super-120b-a12b": 90000,
+  "nvidia/nemotron-3-nano-30b-a3b": 12000,
+  "meta/llama-3.3-70b-instruct": 12000,
+  "nvidia/nemotron-3-super-120b-a12b": 12000,
 };
 const NVIDIA_MODEL_FALLBACKS = (() => {
   const envFallbacks =
@@ -453,11 +453,11 @@ app.post("/api/score", async (req, res) => {
           );
 
           textBody = await response.text();
-
-          if (!response.ok) {
-            lastError = { model, status: response.status, body: textBody };
-            continue;
-          }
+if (!response.ok) {
+  lastError = { model, status: response.status, body: textBody };
+  console.error("NVIDIA model returned error status:", model, response.status, textBody.slice(0, 300));
+  continue;
+}
 
           let data;
           try {

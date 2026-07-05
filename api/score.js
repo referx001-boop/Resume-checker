@@ -35,7 +35,7 @@ const NVIDIA_MODEL =
   process.env.NVIDIA_MODEL?.trim() || "nvidia/nemotron-3-nano-30b-a3b";
 const NVIDIA_MODEL_TIMEOUTS = {
   "nvidia/nemotron-3-nano-30b-a3b": 12000,
-  "meta/llama-3.3-70b-instruct": 12000,
+  // "meta/llama-3.3-70b-instruct": 12000,
   "nvidia/nemotron-3-super-120b-a12b": 12000,
 };
 const NVIDIA_MODEL_FALLBACKS = (() => {
@@ -45,7 +45,7 @@ const NVIDIA_MODEL_FALLBACKS = (() => {
       .filter(Boolean) || [];
   const defaults = [
     "nvidia/nemotron-3-nano-30b-a3b",
-    "meta/llama-3.3-70b-instruct",
+    // "meta/llama-3.3-70b-instruct",
     "nvidia/nemotron-3-super-120b-a12b",
   ];
   return Array.from(

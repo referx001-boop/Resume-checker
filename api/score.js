@@ -5,7 +5,7 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import { createClient } from "@supabase/supabase-js";
-import { Agent } from "undici";
+import { fetch as undiciFetch, Agent } from "undici";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,10 +21,6 @@ const ipv4Agent = new Agent({
     family: 4,
   },
 });
-
-async function fetchIPv4(url, options = {}) {
-  return fetch(url, { ...options, dispatcher: ipv4Agent });
-}
 
 const PROVIDER = (process.env.MODEL_PROVIDER || "mock").trim().toLowerCase();
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -67,7 +63,7 @@ async function fetchWithTimeout(url, options = {}, timeout = 60000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
   try {
-    return await fetch(url, {
+    return await undiciFetch(url, {
       ...options,
       signal: controller.signal,
       dispatcher: ipv4Agent,
@@ -76,6 +72,7 @@ async function fetchWithTimeout(url, options = {}, timeout = 60000) {
     clearTimeout(id);
   }
 }
+
 function truncatePrompt(text) {
   if (typeof text !== "string") return text;
   if (text.length <= MAX_PROMPT_CHARS) return text;
@@ -424,7 +421,6 @@ app.post("/api/score", async (req, res) => {
 
     if (PROVIDER === "nvidia") {
       let lastError = null;
-      let data = null;
       let response = null;
       let textBody = "";
 

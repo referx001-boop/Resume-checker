@@ -23,9 +23,9 @@ const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY?.trim();
 const NVIDIA_API_URL = process.env.NVIDIA_API_URL?.trim() || "https://integrate.api.nvidia.com/v1/chat/completions";
 const NVIDIA_MODEL = process.env.NVIDIA_MODEL?.trim() || "meta/llama-3.3-70b-instruct";
 const NVIDIA_MODEL_TIMEOUTS = {
-  "meta/llama-3.3-70b-instruct": 15000,
-  "nvidia/nemotron-3-nano-30b-a3b": 10000,
-  "openai/gpt-oss-20b": 10000,
+  "meta/llama-3.3-70b-instruct": 8000,
+  "nvidia/nemotron-3-nano-30b-a3b": 9000,
+  "openai/gpt-oss-20b": 9000,
 };
 const NVIDIA_MODEL_FALLBACKS = (() => {
   const envFallbacks = (process.env.NVIDIA_MODEL_FALLBACKS?.split(",").map((item) => item.trim()).filter(Boolean)) || [];

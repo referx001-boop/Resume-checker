@@ -35,7 +35,7 @@ const NVIDIA_MODEL_FALLBACKS = (() => {
 })();
 const MOCK_FALLBACK = process.env.MOCK_FALLBACK === "true";
 const MAX_PROMPT_CHARS = Number(process.env.MAX_PROMPT_CHARS || "12000");
-const MAX_RESPONSE_TOKENS = Number(process.env.MAX_RESPONSE_TOKENS || "700");
+const MAX_RESPONSE_TOKENS = Number(process.env.MAX_RESPONSE_TOKENS || "2000");
 const NVIDIA_REQUEST_TIMEOUT_MS = Number(process.env.NVIDIA_REQUEST_TIMEOUT_MS || "60000");
 
 async function fetchWithTimeout(url, options = {}, timeout = 60000) {
@@ -124,7 +124,23 @@ if (PROVIDER === "nvidia" && NVIDIA_MODEL_FALLBACKS.length > 0) {
 const SYSTEM_PROMPT =
   "You score resumes like an experienced recruiter. Read the resume text and return ONLY valid JSON in this exact shape, no markdown, no extra text: " +
   '{"score": number 0-100, "verdict": one direct sentence, "findings": array of objects with severity (good, warning, or critical) and point (one specific sentence), "rewriteSuggestions": array of objects with original (a weak line from the resume) and rewrite (a stronger version of that line)}. ' +
-  "Give 4 to 8 findings. Give 2 to 5 rewriteSuggestions, only for lines that genuinely need work. Base every finding on the actual resume content provided.";
+  "Give 4 to 8 findings. Give 2 to 5 rewriteSuggestions, only for lines that genuinely need work. Base every finding on the actual resume content provided. " +
+  "Do not explain your reasoning. Do not think out loud. Do not write any text before or after the JSON object. Output the JSON object immediately.";
+
+function extractJson(text) {
+  const cleaned = text.trim().replace(/^```json\s*/i, "").replace(/```\s*$/i, "");
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    // Fall through and try to find the JSON object inside surrounding text.
+  }
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start === -1 || end === -1 || end < start) {
+    throw new Error("No JSON object found in response");
+  }
+  return JSON.parse(cleaned.slice(start, end + 1));
+}
 
 function buildPrompt(resumeText, role) {
   const roleLine = role ? `Target role: ${role}\n\n` : "";
@@ -395,17 +411,16 @@ app.post("/api/score", async (req, res) => {
           const text = data.choices?.[0]?.message?.content || "";
 
           if (text && text.trim()) {
-            const cleaned = text.trim().replace(/^```json\s*/i, "").replace(/```\s*$/i, "");
             try {
-              const parsed = JSON.parse(cleaned);
+              const parsed = extractJson(text);
               if (typeof parsed.score === "number" && parsed.verdict && Array.isArray(parsed.findings)) {
                 if (!Array.isArray(parsed.rewriteSuggestions)) parsed.rewriteSuggestions = [];
                 return respondAndCache(res, cacheKey, parsed, tier);
               }
-              lastError = { model, error: "Response missing score, verdict, or findings", body: cleaned };
+              lastError = { model, error: "Response missing score, verdict, or findings", body: text.slice(0, 500) };
               continue;
             } catch {
-              lastError = { model, error: "Response was not valid JSON", body: cleaned };
+              lastError = { model, error: "Response was not valid JSON", body: text.slice(0, 500) };
               continue;
             }
           }
@@ -450,8 +465,8 @@ app.post("/api/score", async (req, res) => {
       });
 
       const raw = await response.json();
-      const text = raw.content?.[0]?.text?.trim().replace(/^```json\s*/i, "").replace(/```\s*$/i, "");
-      const parsed = JSON.parse(text);
+      const text = raw.content?.[0]?.text || "";
+      const parsed = extractJson(text);
       if (!Array.isArray(parsed.rewriteSuggestions)) parsed.rewriteSuggestions = [];
       return respondAndCache(res, cacheKey, parsed, tier);
     }
@@ -478,8 +493,7 @@ app.post("/api/score", async (req, res) => {
       }
 
       const text = typeof data === "string" ? data : data.generated_text || data[0]?.generated_text || "";
-      const cleaned = text.trim().replace(/^```json\s*/i, "").replace(/```\s*$/i, "");
-      const parsed = JSON.parse(cleaned);
+      const parsed = extractJson(text);
       if (!Array.isArray(parsed.rewriteSuggestions)) parsed.rewriteSuggestions = [];
       return respondAndCache(res, cacheKey, parsed, tier);
     }
